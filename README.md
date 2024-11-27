@@ -11,6 +11,7 @@ Introduction
 This study aims to develop a reliable method for estimating the duration of hospital stays for patients, which is crucial for effective patient care planning and hospital resource management. We utilize a dataset from Kaggle containing visit-level information on 100,000 patients admitted to hospitals. The main outcome variable is "Length of Stay" (LOS), defined as the number of days a patient spends in the hospital.
 
 The analysis incorporates various additional variables, including:
+![image](https://github.com/user-attachments/assets/99c9a512-e537-4d35-ac29-46a70c5e5754)
 
 Disease status (e.g., asthma, iron deficiency)
 Levels of health biomarkers (e.g., hematocrit, glucose)
