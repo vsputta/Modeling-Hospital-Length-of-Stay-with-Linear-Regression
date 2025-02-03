@@ -1,0 +1,342 @@
+---
+title: "LOS_regression_project"
+author: "Varun Putta"
+date: "2025-02-03"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load libraries (suppress messages where appropriate)
+suppressMessages(library(tidyverse))
+suppressMessages(library(readr))
+suppressMessages(library(tidyr))
+suppressMessages(library(ggplot2))
+suppressMessages(library(lubridate))
+suppressMessages(library(dplyr))
+suppressMessages(library(r02pro))
+suppressMessages(library(data.table))
+suppressMessages(library(table1))
+suppressMessages(library(leaps))
+suppressMessages(library(tableone))
+suppressMessages(library(faraway))
+suppressMessages(library(gridExtra))
+suppressMessages(library(caret))
+suppressMessages(library(MASS))
+suppressMessages(library(lmtest))
+```
+
+
+###############################################
+# 2. DATA PREPARATION
+###############################################
+
+We begin by loading our dataset from a CSV file that contains 100,000 rows and 28 variables. After reading in the data, we check for duplicate rows and missing values. In this process, we also remove a set of columns that are not required for our analysis (such as eid, vdate, rcount, etc.). This initial cleaning ensures that the dataset is tidy and ready for further analysis.
+
+```{r}
+# Read the CSV file (adjust the file path as needed)
+lengthof_stay_data <- read_csv("LengthOfStay.csv")
+
+# Examine the first few rows
+head(lengthof_stay_data)
+
+# Check for duplicates and missing values
+duplicated_rows <- lengthof_stay_data %>% filter(duplicated(.))
+print("Duplicated rows:")
+print(duplicated_rows)
+
+na_indices <- apply(lengthof_stay_data, 2, function(x) any(is.na(x)))
+print("Columns with NA values:")
+print(na_indices)
+
+# Remove unwanted columns
+columns_to_remove <- c("eid", "vdate", "rcount", "discharged", "facid", 
+                       "secondarydiagnosisnonicd9", "psychother", "depress")
+length_data <- lengthof_stay_data[, !names(lengthof_stay_data) %in% columns_to_remove]
+head(length_data)
+# (Dataset has 100,000 rows and 23 columns after removal)
+
+```
+
+###############################################
+# 3. EXPLORATORY DATA ANALYSIS (EDA)
+###############################################
+
+In this section, we perform an exploratory analysis to understand the structure and distribution of our data. First, we convert key variables (such as gender, dialysisrenalendstage, etc.) into factors for appropriate analysis. Next, we generate summary tables using the tableone package to get descriptive statistics. We also produce density plots, histograms, and scatterplots for continuous variables (e.g., hematocrit, neutrophils, etc.) and for relationships between the outcome (lengthofstay) and predictors. This EDA step is crucial to verify data integrity and to gain insights into variable distributions and potential relationships.
+
+
+
+```{r}
+# Convert selected variables to factors
+length_data <- transform(length_data,
+                         gender = factor(gender),
+                         dialysisrenalendstage = factor(dialysisrenalendstage),
+                         asthma = factor(asthma),
+                         irondef = factor(irondef),
+                         pneum = factor(pneum),
+                         substancedependence = factor(substancedependence),
+                         psychologicaldisordermajor = factor(psychologicaldisordermajor),
+                         fibrosisandother = factor(fibrosisandother),
+                         malnutrition = factor(malnutrition),
+                         hemo = factor(hemo))
+
+# Univariate analysis using table1
+table1_obj <- CreateTableOne(vars = c("gender", "dialysisrenalendstage", "asthma","irondef", "pneum", "substancedependence", "psychologicaldisordermajor", "fibrosisandother","malnutrition", "hemo", "hematocrit", "neutrophils","sodium", "glucose", "bloodureanitro", "creatinine","bmi", "pulse", "respiration", "lengthofstay"), data = length_data)
+
+print(table1_obj)
+
+
+```
+
+
+###############################################
+# 4. INITIAL (UNADJUSTED) MODEL
+###############################################
+
+
+We first fit an unadjusted linear regression model (lmod) using all available predictors. This model serves as a baseline to understand the relationship between the predictors and the outcome variable, lengthofstay. Following this, we preprocess the data by handling any missing values, ensuring categorical variables are properly encoded, and scaling the numerical predictors. The scaling step is important for ensuring that variables are on a similar scale, which helps in both model convergence and interpretation of coefficients.
+
+```{r}
+lmod <- lm(lengthofstay ~ ., data = length_data)
+summary(lmod)
+```
+
+###############################################
+# 5. DATA PRE-PROCESSING FOR MODELING
+###############################################
+
+```{r}
+# Remove any remaining missing values
+length_data <- na.omit(length_data)
+# (Categorical variables already encoded)
+
+# Scale numerical variables (exclude outcome)
+preproc <- preProcess(length_data[, !names(length_data) %in% "lengthofstay"],
+                      method = c("scale", "center"))
+length_scaled <- predict(preproc, newdata = length_data)
+
+# Build linear regression model on scaled data
+lm_model <- lm(lengthofstay ~ ., data = length_scaled)
+summary(lm_model)
+
+# Split data into training (70%) and testing (30%)
+set.seed(123)
+train_index <- createDataPartition(length_scaled$lengthofstay, p = 0.7, list = FALSE)
+train_data <- length_scaled[train_index, ]
+test_data  <- length_scaled[-train_index, ]
+
+```
+
+###############################################
+# 6. MODEL DIAGNOSTICS & ASSUMPTIONS
+###############################################
+
+After fitting the linear regression model on the scaled dataset (lm_model), we conduct a series of diagnostic tests to check whether the model assumptions hold. We plot residuals versus fitted values to assess linearity and homoscedasticity. In addition, Q-Q plots and histograms of the residuals are generated to evaluate the normality assumption. We also compute hat values to check for high leverage points and use half-normal plots to visually assess these values. Finally, we calculate Variance Inflation Factors (VIF) to detect multicollinearity among the predictors. These diagnostic steps help identify issues that might affect the reliability of the model.
+
+```{r}
+# Function to plot residual diagnostics
+plot_residuals <- function(model, main_suffix = "") {
+  par(mfrow = c(1,2))
+  plot(fitted(model), residuals(model), 
+       xlab = "Fitted", ylab = "Residuals", 
+       main = paste("Residuals vs Fitted", main_suffix))
+  abline(h = 0, col = "red")
+  
+  qqnorm(residuals(model), main = paste("Q-Q Plot", main_suffix))
+  qqline(residuals(model), col = "red")
+}
+
+# 1. Linearity & Additivity
+par(mfrow = c(1,1))
+plot(fitted(lm_model), residuals(lm_model), 
+     xlab = "Fitted", ylab = "Residuals", 
+     main = "Residuals vs Fitted")
+abline(h = 0, col = "red")
+
+# 2. Normality of Errors
+par(mfrow = c(1,2))
+qqnorm(residuals(lm_model), main = "Normal Q-Q Plot")
+qqline(residuals(lm_model), col = "red")
+hist(residuals(lm_model), main = "Residuals Histogram")
+
+# 3. Equal Variance of Errors & Standardized Residuals
+par(mfrow = c(1,1))
+plot(fitted(lm_model), residuals(lm_model), 
+     xlab = "Fitted", ylab = "Residuals", 
+     main = "Residuals vs Fitted")
+abline(h = 0, col = "red")
+plot(fitted(lm_model), rstandard(lmod), 
+     xlab = "Fitted", ylab = "Standardized Residuals", 
+     col = "blue", main = "Standardized Residuals vs Fitted")
+abline(h = 0, col = "red")
+lmodResFit <- lm(sqrt(abs(residuals(lm_model))) ~ fitted(lm_model))
+summary(lmodResFit)
+
+# 4. Outliers & Leverages
+hatv <- hatvalues(lm_model)
+print(head(hatv))
+print(mean(hatv))
+high_leverage <- hatv[hatv > 2 * mean(hatv)]
+print(head(high_leverage))
+
+cat("Number of high leverage points:", length(high_leverage), "\n")
+summary(high_leverage)
+
+hist(hatv, xlab = "Leverages", main = "Histogram of Leverages")
+abline(v = 2 * mean(hatv), col = "red")
+halfnorm(hatv, nlab = 10, ylab  = "Leverages")
+
+# 5. Multicollinearity via VIF
+x <- model.matrix(lm_model)[,-1]
+print(vif(x))
+
+```
+
+Outliers and influential data points can unduly affect model estimates. To identify these, we calculate Cook’s distances and studentized residuals. For example, the code snippet that prints high leverage values (using hatv[hatv > 2 * mean(hatv)]) has been enhanced to summarize the output, providing counts and summary statistics rather than listing all values. This step ensures that only observations with undue influence are flagged for further investigation or potential removal. In our analysis, we remove identified outliers and refit the model on the cleaned dataset (length_outliers).
+
+###############################################
+# 7. MODEL TRANSFORMATIONS
+###############################################
+
+To address potential non-linearity in the relationship between the predictors and lengthofstay, we experiment with transformations of the outcome variable. First, we apply a Box-Cox transformation, identifying an optimal lambda (in this case, approximately 0.3434). We then transform the outcome accordingly and refit the model (lm_modelTrans) to assess improvements in the model fit and residual behavior. We also attempt a log transformation (lm_model_log) and compare the diagnostic plots. These transformation experiments are vital when the residuals suggest non-normality or heteroscedasticity.
+```{r}
+# Box-Cox Transformation of outcome
+obj <- boxcox(lm_model, plotit = TRUE)
+best_lambda <- obj$x[which.max(obj$y)]
+print(paste("Best lambda:", best_lambda))
+
+# Transform outcome using lambda=0.3434 (as per your calculation)
+los_Trans <- length_scaled$lengthofstay^(0.3434)
+lm_modelTrans <- lm(los_Trans ~ ., data = length_scaled)
+summary(lm_modelTrans)
+plot_residuals(lm_modelTrans, main_suffix = "(Box-Cox)")
+
+# Log Transformation of outcome
+los_log <- log(length_scaled$lengthofstay)
+lm_model_log <- lm(los_log ~ ., data = length_scaled)
+summary(lm_model_log)
+plot_residuals(lm_model_log, main_suffix = "(Log-transformed)")
+
+# Test for Serial Correlation
+residuals_lm_model <- residuals(lm_model)
+n <- length(residuals_lm_model)
+lmodsr <- lm(tail(residuals_lm_model, n - 1) ~ head(residuals_lm_model, n - 1) - 1)
+summary(lmodsr)
+dwtest(lm_model, data = length_scaled)
+```
+
+###############################################
+# 8. POLYNOMIAL MODEL & MODEL SELECTION (Part 2)
+###############################################
+
+Model Selection:
+We use model selection criteria to simplify our model and avoid overfitting. The regsubsets function from the leaps package is applied to search over different subsets of predictors. BIC (Bayesian Information Criterion) is computed for each model, and a plot of BIC versus the number of predictors helps us identify the most parsimonious model. Based on these results and domain knowledge, we select a reduced model (lm_BIC) that includes key predictors such as gender, dialysisrenalendstage, asthma, irondef, pneum, substancedependence, and psychologicaldisordermajor.
+
+
+# --- A. Polynomial Model ---
+# For non-linearity, we add polynomial terms for continuous predictors.
+# Here we explicitly include linear, squared, and interaction (linear*squared) terms
+# for selected continuous variables along with the categorical variables.
+
+```{r}
+lm_poly <- lm(lengthofstay ~ gender + dialysisrenalendstage + asthma + irondef + pneum +substancedependence + psychologicaldisordermajor + fibrosisandother +malnutrition + hemo +hematocrit + I(hematocrit^2) + I(hematocrit * hematocrit^2) +neutrophils + I(neutrophils^2) + I(neutrophils * neutrophils^2) +sodium + I(sodium^2) +glucose + I(glucose^2) +bloodureanitro + I(bloodureanitro^2) + I(bloodureanitro * bloodureanitro^2) +creatinine + I(creatinine^2) +bmi + I(bmi^2) +pulse + I(pulse^2) +respiration + I(respiration^2) + I(respiration * respiration^2),data = length_scaled)
+summary(lm_poly)
+
+# Diagnostic Plots for Polynomial Model
+par(mfrow = c(1,1))
+plot(fitted(lm_poly), residuals(lm_poly), 
+     xlab = "Fitted", ylab = "Residuals", 
+     main = "Polynomial Model: Residuals vs Fitted")
+abline(h = 0, col = "red")
+plot(fitted(lm_poly), rstandard(lm_poly), 
+     xlab = "Fitted", ylab = "Standardized Residuals", 
+     col = "blue", main = "Polynomial Model: Standardized Residuals")
+abline(h = 0, col = "red")
+
+# --- B. Outlier & Influence Analysis ---
+# Cook's Distance for influential points
+cook <- cooks.distance(lm_model)
+print("Cook's distances > 0.5:")
+print(cook[cook > 0.5])
+halfnorm(cook, nlab = 3, ylab = "Cook's distances")
+
+# Studentized Residuals for Outlier Detection
+stud <- rstudent(lm_model)
+max_resid <- stud[which.max(abs(stud))]
+print(paste("Max Studentized Residual:", max_resid))
+# Bonferroni-corrected critical value
+critical_value <- qt(1 - 0.05/(n * 2), n - length(coef(lm_model)) - 1)
+print(paste("Critical value:", critical_value))
+outliers <- which(abs(stud) > critical_value)
+print(paste("Number of outliers identified:", length(outliers)))
+
+# Remove outliers and refit model
+length_outliers <- length_scaled[-outliers, ]
+lm_outliers <- lm(lengthofstay ~ ., data = length_outliers)
+summary(lm_outliers)
+plot_residuals(lm_outliers, main_suffix = "(Outliers Removed)")
+par(mfrow = c(1,2))
+qqnorm(residuals(lm_outliers), main = "Q-Q Plot (Outliers Removed)")
+qqline(residuals(lm_outliers), col = "red")
+hist(residuals(lm_outliers), main = "Histogram (Outliers Removed)")
+
+# --- C. Model Selection using BIC ---
+# Use regsubsets to search over model subsets
+regsub_model <- regsubsets(lengthofstay ~ gender + dialysisrenalendstage + asthma + irondef + pneum +substancedependence + psychologicaldisordermajor + fibrosisandother + malnutrition + hemo +hematocrit + I(hematocrit^2) + I(hematocrit * hematocrit^2) +neutrophils + I(neutrophils^2) + I(neutrophils * neutrophils^2) +sodium + I(sodium^2) +glucose + I(glucose^2) +bloodureanitro + I(bloodureanitro^2) + I(bloodureanitro * bloodureanitro^2) +creatinine + I(creatinine^2) + bmi + I(bmi^2) +pulse + I(pulse^2) +respiration + I(respiration^2) + I(respiration * respiration^2),data = length_scaled)
+rs <- summary(regsub_model)
+
+# Calculate BIC for models with 1 to 20 predictors
+n <- nrow(length_scaled)
+bic_values <- sapply(1:20, function(p) {
+  # Note: rs$rss is a vector; make sure index exists.
+  if(p <= length(rs$rss)) n * log(rs$rss[p] / n) + p * log(n) else NA
+})
+plot(1:20, bic_values, type = "b", xlab = "Number of Predictors", ylab = "BIC", col = "blue")
+print(bic_values)
+
+# --- D. Final Model ---
+# Based on BIC results and domain knowledge, a reduced model is selected.
+lm_BIC <- lm(lengthofstay ~ gender + dialysisrenalendstage + asthma + irondef + pneum +substancedependence + psychologicaldisordermajor,data = length_scaled)
+summary(lm_BIC)
+
+# Final Model Diagnostics
+par(mfrow = c(1,1))
+plot(fitted(lm_BIC), residuals(lm_BIC), 
+     xlab = "Fitted", ylab = "Residuals", 
+     main = "Final Model: Residuals vs Fitted")
+abline(h = 0, col = "red")
+plot(fitted(lm_BIC), rstandard(lm_BIC), 
+     xlab = "Fitted", ylab = "Standardized Residuals", 
+     col = "blue", main = "Final Model: Standardized Residuals")
+abline(h = 0, col = "red")
+par(mfrow = c(1,2))
+qqnorm(residuals(lm_BIC), main = "Final Model: Q-Q Plot")
+qqline(residuals(lm_BIC), col = "red")
+hist(residuals(lm_BIC), main = "Final Model: Residuals Histogram")
+
+# Full model fitted on outlier-removed data:
+lm_model_anova <- lm(lengthofstay ~ ., data = length_outliers)
+
+# Refit final (BIC-selected) model on the same outlier-removed data:
+lm_BIC_refit <- lm(lengthofstay ~ gender + dialysisrenalendstage + asthma + irondef + pneum +
+                       substancedependence + psychologicaldisordermajor,
+                   data = length_outliers)
+
+# Now compare using ANOVA:
+anova(lm_model_anova, lm_BIC_refit)
+```
+
+To assess whether the removal of certain predictors significantly impacts the model fit, we compare our full model (which includes all available predictors on the outlier-removed dataset) to our reduced model selected via the Bayesian Information Criterion (BIC). Both models are refitted on the same dataset (length_outliers) to ensure a valid comparison.
+
+#The full model is defined as: lm_model_anova <- lm(lengthofstay ~ ., data = length_outliers)
+
+and the reduced (BIC-selected) model is refitted as:
+
+#lm_BIC_refit <- lm(lengthofstay ~ gender + dialysisrenalendstage + asthma + irondef + pneum + substancedependence + psychologicaldisordermajor, data = length_outliers).
+
+We then perform an ANOVA test to compare these nested models. A significant p-value from this test indicates that the additional predictors in the full model explain a statistically significant amount of extra variance in the outcome compared to the reduced model. In our case, the ANOVA results produced a very low p-value (p < 2.2e-16), suggesting that the full model does indeed capture more variance. However, in practice, we must balance model complexity with interpretability. If the improvement in fit is not worth the extra complexity, a simpler model (with fewer predictors) might be preferred.
+
+This comparison helps us determine if the simpler model can be used without a significant loss in predictive power.
